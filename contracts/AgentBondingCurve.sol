@@ -58,18 +58,20 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
     uint256 public constant GRADUATION_FEE = 2 ether;
     address public constant DEAD_ADDRESS = 0x000000000000000000000000000000000000dEaD;
     address public immutable UNISWAP_V2_ROUTER;
-    
-    // Trading fees: 0.5% protocol + 0.5% creator = 1% total
-    uint256 public constant PROTOCOL_FEE_BPS = 50;          // 0.5%
-    uint256 public constant CREATOR_FEE_BPS = 50;          // 0.5%
+    uint256 public constant MAX_TOTAL_FEE_BPS = 1000;        // 10% maximum total fee
     uint256 public constant CREATOR_VESTING_BPS = 2000;     // 20%
     uint256 public constant MAX_SUPPLY = 1_000_000_000 * 1e18; // 1B tokens max
+    
+    // Configurable fees (in basis points, 10000 = 100%)
+    uint256 public protocolFeeBps = 50;          // 0.5% default
+    uint256 public creatorFeeBps = 50;          // 0.5% default
+    
+    // Configurable dev buy cap (in basis points, 10000 = 100%)
+    uint256 public maxDevBuyPercentBps = 250;    // 2.5% default
 
     // State variables
     mapping(address => address) public agentToToken;
     mapping(address => uint256) public tokenCollateral;
-    mapping(address => uint256) public protocolFees; // Accumulated protocol fees per token
-    mapping(address => uint256) public creatorFees; // Accumulated creator fees per token
     mapping(address => uint256) public nonces; // Nonce for signature replay protection
     mapping(address => uint256) public virtualK; // Virtual AMM constant product (x * y = k)
     mapping(address => bool) public graduated; // Whether token has graduated to Uniswap
@@ -90,6 +92,24 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
         signerAddress = _signer;
     }
 
+    // Set protocol fee (in basis points)
+    function setProtocolFee(uint256 _protocolFeeBps) external onlyOwner {
+        require(_protocolFeeBps + creatorFeeBps <= MAX_TOTAL_FEE_BPS, "Total fee exceeds limit");
+        protocolFeeBps = _protocolFeeBps;
+    }
+
+    // Set creator fee (in basis points)
+    function setCreatorFee(uint256 _creatorFeeBps) external onlyOwner {
+        require(protocolFeeBps + _creatorFeeBps <= MAX_TOTAL_FEE_BPS, "Total fee exceeds limit");
+        creatorFeeBps = _creatorFeeBps;
+    }
+
+    // Set dev buy cap (in basis points)
+    function setDevBuyCap(uint256 _maxDevBuyPercentBps) external onlyOwner {
+        require(_maxDevBuyPercentBps <= 10000, "Cannot exceed 100%");
+        maxDevBuyPercentBps = _maxDevBuyPercentBps;
+    }
+
     // Pause functions for emergency
     function pause() external onlyOwner {
         _pause();
@@ -105,7 +125,8 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
         string memory symbol, 
         bytes memory signature,
         uint256 nonce,
-        uint256 deadline
+        uint256 deadline,
+        uint256 devBuyAmount
     ) external payable whenNotPaused {
         require(msg.value >= LAUNCH_FEE, "Launch fee required");
         require(agentToToken[msg.sender] == address(0), "Already launched");
@@ -124,7 +145,8 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
             symbol, 
             nonce,
             block.chainid,
-            deadline
+            deadline,
+            devBuyAmount
         ));
         bytes32 ethSignedMessageHash = messageHash.toEthSignedMessageHash();
         address recoveredSigner = ethSignedMessageHash.recover(signature);
@@ -142,33 +164,54 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
         uint256 creatorAmount = (MAX_SUPPLY * CREATOR_VESTING_BPS) / 10000;
         AgentToken(tokenAddr).mint(msg.sender, creatorAmount);
         
-        // 5. Initialize Virtual AMM
-        // Start with minimal initial liquidity to establish the curve
-        // We need initial ETH and token reserves to calculate k
+        // 5. Initialize Virtual AMM with minimal liquidity
         uint256 initialEth = 0.001 ether;
+        tokenCollateral[tokenAddr] = initialEth;
+        virtualK[tokenAddr] = initialEth * creatorAmount;
         
-        // If user provided additional ETH, use it for initial buy
-        if (remainingEth > 0) {
-            // Perform initial buy with remaining ETH
-            // This will set up the curve properly
-            tokenCollateral[tokenAddr] = initialEth;
-            virtualK[tokenAddr] = initialEth * creatorAmount; // Initial k
+        // 6. Handle dev buy if requested
+        uint256 ethUsedForDevBuy = 0;
+        
+        if (devBuyAmount > 0) {
+            // Enforce MAX_DEV_BUY_PERCENT limit
+            uint256 maxDevBuy = (MAX_SUPPLY * maxDevBuyPercentBps) / 10000;
+            require(devBuyAmount <= maxDevBuy, "Dev buy exceeds cap");
             
-            emit TokenLaunched(tokenAddr, msg.sender, symbol, block.timestamp);
+            // Calculate required ETH for dev buy using bonding curve formula
+            // Current state: x0 = initialEth, y0 = creatorAmount
+            // We want to buy devBuyAmount tokens
+            // Using formula: tokensBought = (ethForCurve * y0) / x0
+            // So: ethForCurve = (devBuyAmount * x0) / y0
+            uint256 ethForCurve = (devBuyAmount * initialEth) / creatorAmount;
             
-            // Perform buy with remaining ETH
-            _buy(tokenAddr, msg.sender, remainingEth, 0);
+            // Add fees to get total ETH needed
+            uint256 totalFeeBps = protocolFeeBps + creatorFeeBps;
+            uint256 ethNeededWithFees = (ethForCurve * 10000) / (10000 - totalFeeBps);
+            
+            require(remainingEth >= ethNeededWithFees, "Insufficient ETH for dev buy");
+            
+            // Perform dev buy (this will update collateral and k, and mint tokens)
+            _buy(tokenAddr, msg.sender, ethNeededWithFees, devBuyAmount);
+            ethUsedForDevBuy = ethNeededWithFees;
         } else {
-            // No additional ETH, just set up minimal curve
-            // Mint a small amount of tokens to establish the curve
+            // No dev buy, mint minimal tokens to establish curve
             uint256 minTokens = 1000 * 1e18; // 1000 tokens
             AgentToken(tokenAddr).mint(msg.sender, minTokens);
             
-            tokenCollateral[tokenAddr] = initialEth;
-            virtualK[tokenAddr] = initialEth * (creatorAmount + minTokens);
-            
-            emit TokenLaunched(tokenAddr, msg.sender, symbol, block.timestamp);
+            // Update k with new supply
+            uint256 newSupply = creatorAmount + minTokens;
+            virtualK[tokenAddr] = initialEth * newSupply;
         }
+        
+        // 7. Refund excess ETH
+        uint256 totalEthUsed = LAUNCH_FEE + ethUsedForDevBuy;
+        if (msg.value > totalEthUsed) {
+            uint256 refund = msg.value - totalEthUsed;
+            (bool success, ) = msg.sender.call{value: refund}("");
+            require(success, "Refund failed");
+        }
+        
+        emit TokenLaunched(tokenAddr, msg.sender, symbol, block.timestamp);
     }
 
     // Public Buy
@@ -185,9 +228,9 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
         
         AgentToken token = AgentToken(tokenAddr);
         
-        // Calculate fees: 0.5% protocol + 0.5% creator = 1% total
-        uint256 protocolFee = (ethAmount * PROTOCOL_FEE_BPS) / 10000;
-        uint256 creatorFee = (ethAmount * CREATOR_FEE_BPS) / 10000;
+        // Calculate fees dynamically based on current config
+        uint256 protocolFee = (ethAmount * protocolFeeBps) / 10000;
+        uint256 creatorFee = (ethAmount * creatorFeeBps) / 10000;
         uint256 ethForCurve = ethAmount - protocolFee - creatorFee;
 
         // Get current state
@@ -240,10 +283,16 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
         require(tokensBought >= minTokensOut, "Slippage too high");
         require(y0 + tokensBought <= MAX_SUPPLY, "Max supply reached");
 
-        // Update fees
-        protocolFees[tokenAddr] += protocolFee;
+        // Distribute fees immediately
         address creator = token.owner();
-        creatorFees[tokenAddr] += creatorFee;
+        if (protocolFee > 0) {
+            (bool success1, ) = owner().call{value: protocolFee}("");
+            require(success1, "Protocol fee transfer failed");
+        }
+        if (creatorFee > 0 && creator != address(0)) {
+            (bool success2, ) = creator.call{value: creatorFee}("");
+            require(success2, "Creator fee transfer failed");
+        }
 
         // Update state
         uint256 y1_new = y0 + tokensBought;
@@ -292,18 +341,24 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
         require(x0 >= x1, "Insufficient ETH reserve");
         uint256 ethOutRaw = x0 - x1;
         
-        // Calculate fees: 0.5% protocol + 0.5% creator = 1% total
-        uint256 protocolFee = (ethOutRaw * PROTOCOL_FEE_BPS) / 10000;
-        uint256 creatorFee = (ethOutRaw * CREATOR_FEE_BPS) / 10000;
+        // Calculate fees dynamically based on current config
+        uint256 protocolFee = (ethOutRaw * protocolFeeBps) / 10000;
+        uint256 creatorFee = (ethOutRaw * creatorFeeBps) / 10000;
         uint256 ethToReturn = ethOutRaw - protocolFee - creatorFee;
         
         require(ethToReturn >= minEthOut, "Slippage too high");
         require(tokenCollateral[token] >= ethToReturn, "Insufficient collateral");
         
-        // Update fees
-        protocolFees[token] += protocolFee;
+        // Distribute fees immediately
         address creator = tokenContract.owner();
-        creatorFees[token] += creatorFee;
+        if (protocolFee > 0) {
+            (bool success1, ) = owner().call{value: protocolFee}("");
+            require(success1, "Protocol fee transfer failed");
+        }
+        if (creatorFee > 0 && creator != address(0)) {
+            (bool success2, ) = creator.call{value: creatorFee}("");
+            require(success2, "Creator fee transfer failed");
+        }
         
         // Update state
         tokenCollateral[token] = x1;
@@ -384,25 +439,6 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
         emit Graduated(tokenAddr, amountETH, amountToken, lpToken);
     }
 
-    // Withdraw protocol fees (per token)
-    function withdrawProtocolFees(address token) external onlyOwner {
-        uint256 amount = protocolFees[token];
-        require(amount > 0, "No fees to withdraw");
-        protocolFees[token] = 0;
-        (bool success, ) = owner().call{value: amount}("");
-        require(success, "ETH transfer failed");
-    }
-
-    // Withdraw creator fees
-    function withdrawCreatorFees(address token) external {
-        AgentToken tokenContract = AgentToken(token);
-        require(msg.sender == tokenContract.owner(), "Not token creator");
-        uint256 amount = creatorFees[token];
-        require(amount > 0, "No fees to withdraw");
-        creatorFees[token] = 0;
-        (bool success, ) = msg.sender.call{value: amount}("");
-        require(success, "ETH transfer failed");
-    }
 
     // Withdraw protocol treasury (launch fees + graduation fees)
     function withdrawTreasury() external onlyOwner {
@@ -433,8 +469,8 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
             return 0;
         }
         
-        uint256 protocolFee = (ethAmount * PROTOCOL_FEE_BPS) / 10000;
-        uint256 creatorFee = (ethAmount * CREATOR_FEE_BPS) / 10000;
+        uint256 protocolFee = (ethAmount * protocolFeeBps) / 10000;
+        uint256 creatorFee = (ethAmount * creatorFeeBps) / 10000;
         uint256 ethForCurve = ethAmount - protocolFee - creatorFee;
         
         AgentToken tokenContract = AgentToken(token);
@@ -476,8 +512,8 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
         require(x0 >= x1, "Insufficient reserve");
         uint256 ethOutRaw = x0 - x1;
         
-        uint256 protocolFee = (ethOutRaw * PROTOCOL_FEE_BPS) / 10000;
-        uint256 creatorFee = (ethOutRaw * CREATOR_FEE_BPS) / 10000;
+        uint256 protocolFee = (ethOutRaw * protocolFeeBps) / 10000;
+        uint256 creatorFee = (ethOutRaw * creatorFeeBps) / 10000;
         ethOut = ethOutRaw - protocolFee - creatorFee;
     }
 }
