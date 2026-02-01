@@ -12,6 +12,17 @@
     "react-dom": "latest",
     "viem": "latest",
     "wagmi": "latest",
-    "@rainbow-me/rainbowkit": "latest"
+    "@rainbow-me/rainbowkit": "latest",
+    "@tanstack/react-query": "^5.0.0",
+    "ethers": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "typescript": "latest",
+    "tailwindcss": "latest",
+    "postcss": "latest",
+    "autoprefixer": "latest"
   }
 }

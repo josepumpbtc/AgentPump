@@ -7,7 +7,7 @@ module.exports = {
     base: {
       url: "https://mainnet.base.org",
       accounts: [process.env.PRIVATE_KEY],
-      gasPrice: 1000000000,
+      // Removed fixed gasPrice to let EIP-1559 handle it automatically
     },
     baseSepolia: {
       url: "https://sepolia.base.org",

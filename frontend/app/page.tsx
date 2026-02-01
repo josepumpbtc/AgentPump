@@ -31,9 +31,9 @@ export default function Home() {
         </p>
         
         <div className="flex gap-4">
-          <button className="animate-pulse bg-pink-500 px-10 py-6 text-3xl font-black text-white border-4 border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] hover:bg-pink-400 active:translate-y-2 active:shadow-none">
+          <a href="/launch" className="animate-pulse bg-pink-500 px-10 py-6 text-3xl font-black text-white border-4 border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] hover:bg-pink-400 active:translate-y-2 active:shadow-none">
             💊 LAUNCH TOKEN
-          </button>
+          </a>
         </div>
       </div>
 
