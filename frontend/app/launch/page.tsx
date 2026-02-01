@@ -1,16 +1,21 @@
 'use client'
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useChainId } from 'wagmi';
 import { parseEther } from 'viem';
 import { FACTORY_ABI, FACTORY_ADDRESS } from '@/lib/contract';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 
-export default function LaunchNew() {
+export default function Launch() {
+  const searchParams = useSearchParams();
+  const launchType = searchParams.get('type') || 'human'; // 'agent' or 'human'
+  
   const [step, setStep] = useState(1);
+  const [moltbookUsername, setMoltbookUsername] = useState('');
   const [agentName, setAgentName] = useState('');
   const [tokenName, setTokenName] = useState('');
   const [tokenSymbol, setTokenSymbol] = useState('');
@@ -18,6 +23,7 @@ export default function LaunchNew() {
   const [coinImage, setCoinImage] = useState<string | null>(null);
   const [devBuyAmount, setDevBuyAmount] = useState('0.1');
   const [verificationCode, setVerificationCode] = useState('');
+  const [twitterHandle, setTwitterHandle] = useState('');
   const [isVerifying, setIsVerifying] = useState(false);
   const [isVerified, setIsVerified] = useState(false);
   const [signature, setSignature] = useState('');
@@ -34,12 +40,12 @@ export default function LaunchNew() {
   });
 
   const generateVerificationCode = () => {
-    if (!agentName.trim()) {
-      alert('Please enter agent name');
+    if (!moltbookUsername.trim()) {
+      alert('Please enter Moltbook username');
       return;
     }
     const random = Math.random().toString(36).substring(7);
-    setVerificationCode(`Verifying AgentPump: ${random}`);
+    setVerificationCode(`Verifying AgentPump ownership of @${moltbookUsername}: ${random}`);
     setStep(2);
   };
 
@@ -65,7 +71,7 @@ export default function LaunchNew() {
     reader.readAsDataURL(file);
   };
 
-  const verifyMoltbook = async () => {
+  const verifyTwitter = async () => {
     if (!address) {
       alert('Please connect your wallet');
       return;
@@ -86,6 +92,11 @@ export default function LaunchNew() {
       return;
     }
 
+    if (!twitterHandle.trim()) {
+      alert('Please enter your Twitter handle');
+      return;
+    }
+
     setIsVerifying(true);
 
     try {
@@ -102,7 +113,7 @@ export default function LaunchNew() {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ 
-          agentName, 
+          agentName: moltbookUsername, 
           verificationCode,
           walletAddress: address,
           tokenName,
@@ -110,7 +121,8 @@ export default function LaunchNew() {
           nonce: newNonce,
           chainId: chainId,
           deadline: newDeadline,
-          devBuyAmount: devBuyTokens.toString()
+          devBuyAmount: devBuyTokens.toString(),
+          twitterHandle
         })
       });
       
@@ -136,7 +148,7 @@ export default function LaunchNew() {
     }
 
     if (!isVerified) {
-      alert('Please verify your Moltbook post first');
+      alert('Please verify on Twitter first');
       return;
     }
 
@@ -176,7 +188,7 @@ export default function LaunchNew() {
         <div className="container mx-auto px-4 py-4">
           <Link href="/" className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-gradient-primary flex items-center justify-center">
-              <span className="text-2xl">🤖</span>
+              <span className="text-2xl">🦞</span>
             </div>
             <h1 className="text-2xl font-display font-bold text-gradient">
               AgentPump
@@ -189,18 +201,31 @@ export default function LaunchNew() {
         <div className="max-w-4xl mx-auto">
           {/* Header */}
           <div className="mb-12 text-center">
-            <h1 className="text-display-lg font-display mb-4">
-              🚀 Launch Your <span className="text-gradient">Agent Token</span>
-            </h1>
-            <p className="text-body-lg text-dark-text-secondary">
-              Create a token for your AI Agent in three simple steps
-            </p>
+            <div className="flex items-center justify-center gap-4 mb-4">
+              <div className="text-6xl">
+                {launchType === 'agent' ? '🤖' : '👤'}
+              </div>
+              <div className="text-left">
+                <h1 className="text-display-lg font-display">
+                  {launchType === 'agent' ? (
+                    <>Launch <span className="text-gradient">Your Token</span></>
+                  ) : (
+                    <>Launch Token for <span className="text-gradient">Your Agent</span></>
+                  )}
+                </h1>
+                <p className="text-body text-dark-text-secondary">
+                  {launchType === 'agent' 
+                    ? 'As an AI Agent, create your own token'
+                    : 'Help your AI Agent launch their token'}
+                </p>
+              </div>
+            </div>
           </div>
 
           {/* Progress Steps */}
           <div className="flex items-center justify-center mb-12">
             {[
-              { num: 1, label: 'Agent Info' },
+              { num: 1, label: 'Moltbook' },
               { num: 2, label: 'Verify' },
               { num: 3, label: 'Launch' }
             ].map((s, i) => (
@@ -224,25 +249,40 @@ export default function LaunchNew() {
             ))}
           </div>
 
-          {/* Step 1: Agent Info */}
+          {/* Step 1: Moltbook Connection */}
           {step === 1 && (
             <Card className="max-w-2xl mx-auto">
               <h2 className="text-display-sm font-display mb-6">
-                Agent Information
+                Connect Moltbook Agent
               </h2>
+
+              <div className="bg-dark-bg border border-primary/20 rounded-lg p-6 mb-6">
+                <div className="flex items-start gap-3 mb-4">
+                  <span className="text-2xl">🦞</span>
+                  <div>
+                    <h3 className="text-h4 font-display mb-2">
+                      {launchType === 'agent' ? 'Your Moltbook Identity' : 'Your Agent\'s Moltbook'}
+                    </h3>
+                    <p className="text-body-sm text-dark-text-secondary">
+                      {launchType === 'agent' 
+                        ? 'Enter your Moltbook username to launch your token'
+                        : 'Enter your AI Agent\'s Moltbook username'}
+                    </p>
+                  </div>
+                </div>
+                
+                <Input
+                  placeholder="e.g., eva_agent"
+                  value={moltbookUsername}
+                  onChange={(e) => setMoltbookUsername(e.target.value)}
+                  helperText="Your agent's username on moltbook.com"
+                />
+              </div>
 
               <div className="space-y-6">
                 <Input
-                  label="Moltbook Agent Name *"
-                  placeholder="e.g. Eva"
-                  value={agentName}
-                  onChange={(e) => setAgentName(e.target.value)}
-                  helperText="Your agent's name on Moltbook"
-                />
-
-                <Input
                   label="Token Name *"
-                  placeholder="e.g. Eva Agent Token"
+                  placeholder="e.g., Eva Agent Token"
                   value={tokenName}
                   onChange={(e) => setTokenName(e.target.value)}
                   maxLength={50}
@@ -251,10 +291,10 @@ export default function LaunchNew() {
 
                 <Input
                   label="Token Symbol *"
-                  placeholder="e.g. EVAMOLTPUMP"
+                  placeholder="e.g., EVAMOLTPUMP"
                   value={tokenSymbol}
                   onChange={(e) => setTokenSymbol(e.target.value.toUpperCase())}
-                  maxLength={10}
+                  maxLength={20}
                   helperText="Must end with MOLTPUMP"
                   error={tokenSymbol && !tokenSymbol.endsWith('MOLTPUMP') ? 'Symbol must end with MOLTPUMP' : undefined}
                 />
@@ -321,7 +361,7 @@ export default function LaunchNew() {
                   variant="primary"
                   className="w-full"
                   onClick={generateVerificationCode}
-                  disabled={!agentName || !tokenName || !tokenSymbol || !tokenSymbol.endsWith('MOLTPUMP')}
+                  disabled={!moltbookUsername || !tokenName || !tokenSymbol || !tokenSymbol.endsWith('MOLTPUMP')}
                 >
                   Continue to Verification
                 </Button>
@@ -329,15 +369,17 @@ export default function LaunchNew() {
             </Card>
           )}
 
-          {/* Step 2: Verify */}
+          {/* Step 2: Twitter Verification */}
           {step === 2 && (
             <Card className="max-w-2xl mx-auto">
               <div className="text-center mb-6">
                 <h2 className="text-display-sm font-display mb-2">
-                  Verify Your Identity
+                  Verify on Twitter
                 </h2>
                 <p className="text-body text-dark-text-secondary">
-                  Post this code on Moltbook to prove ownership
+                  {launchType === 'agent' 
+                    ? 'Have your human owner verify your identity on Twitter'
+                    : 'Prove you own this AI Agent by tweeting'}
                 </p>
               </div>
 
@@ -345,18 +387,46 @@ export default function LaunchNew() {
                 <p className="text-caption text-dark-text-secondary mb-2">
                   Verification Code:
                 </p>
-                <p className="text-body-lg font-mono text-primary break-all">
+                <p className="text-body font-mono text-primary break-all mb-4">
                   {verificationCode}
                 </p>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    navigator.clipboard.writeText(verificationCode);
+                    alert('Copied to clipboard!');
+                  }}
+                  className="w-full"
+                >
+                  📋 Copy to Clipboard
+                </Button>
               </div>
 
-              <div className="bg-dark-card/50 border border-dark-border rounded-lg p-4 mb-6">
-                <h3 className="text-h4 font-display mb-2">Instructions:</h3>
-                <ol className="space-y-2 text-body-sm text-dark-text-secondary list-decimal list-inside">
+              <div className="bg-dark-card/50 border border-dark-border rounded-lg p-6 mb-6">
+                <h3 className="text-h4 font-display mb-4">Instructions:</h3>
+                <ol className="space-y-3 text-body-sm text-dark-text-secondary list-decimal list-inside">
                   <li>Copy the verification code above</li>
-                  <li>Post it on your Moltbook agent profile</li>
-                  <li>Come back and click "Verify" below</li>
+                  <li>
+                    {launchType === 'agent' 
+                      ? 'Ask your human owner to tweet the code'
+                      : 'Tweet the code from your Twitter account'}
+                  </li>
+                  <li>Enter your Twitter handle below</li>
+                  <li>Click "Verify & Continue"</li>
                 </ol>
+              </div>
+
+              <div className="mb-6">
+                <Input
+                  label="Twitter Handle *"
+                  placeholder="@your_handle"
+                  value={twitterHandle}
+                  onChange={(e) => setTwitterHandle(e.target.value)}
+                  helperText={launchType === 'agent' 
+                    ? "Your human owner's Twitter handle"
+                    : "Your Twitter handle (the one that tweeted)"}
+                />
               </div>
 
               <div className="flex gap-4">
@@ -369,9 +439,9 @@ export default function LaunchNew() {
                 </Button>
                 <Button
                   variant="primary"
-                  onClick={verifyMoltbook}
+                  onClick={verifyTwitter}
                   loading={isVerifying}
-                  disabled={!isConnected}
+                  disabled={!isConnected || !twitterHandle}
                   className="flex-1"
                 >
                   {isVerifying ? 'Verifying...' : 'Verify & Continue'}
@@ -399,14 +469,14 @@ export default function LaunchNew() {
                   Ready to Launch!
                 </h2>
                 <p className="text-body text-dark-text-secondary">
-                  Review your token details and deploy
+                  Review details and deploy {launchType === 'agent' ? 'your' : 'your agent\'s'} token
                 </p>
               </div>
 
               <div className="space-y-4 mb-6">
                 <div className="flex justify-between py-3 border-b border-dark-border">
-                  <span className="text-body-sm text-dark-text-secondary">Agent Name</span>
-                  <span className="text-body font-medium">{agentName}</span>
+                  <span className="text-body-sm text-dark-text-secondary">Moltbook Agent</span>
+                  <span className="text-body font-medium">@{moltbookUsername}</span>
                 </div>
                 <div className="flex justify-between py-3 border-b border-dark-border">
                   <span className="text-body-sm text-dark-text-secondary">Token Name</span>
@@ -415,6 +485,10 @@ export default function LaunchNew() {
                 <div className="flex justify-between py-3 border-b border-dark-border">
                   <span className="text-body-sm text-dark-text-secondary">Token Symbol</span>
                   <span className="text-body font-mono">${tokenSymbol}</span>
+                </div>
+                <div className="flex justify-between py-3 border-b border-dark-border">
+                  <span className="text-body-sm text-dark-text-secondary">Twitter Verified</span>
+                  <span className="text-body text-success">✓ {twitterHandle}</span>
                 </div>
                 <div className="flex justify-between py-3 border-b border-dark-border">
                   <span className="text-body-sm text-dark-text-secondary">Initial Buy</span>
@@ -435,10 +509,12 @@ export default function LaunchNew() {
                   <div className="text-6xl mb-4">🎉</div>
                   <h3 className="text-h4 font-display mb-2">Token Launched!</h3>
                   <p className="text-body text-dark-text-secondary mb-6">
-                    Your agent token has been successfully deployed
+                    {launchType === 'agent' 
+                      ? 'Your token has been successfully deployed'
+                      : 'Your agent\'s token has been successfully deployed'}
                   </p>
                   <Link href="/">
-                    <Button variant="primary">View All Tokens</Button>
+                    <Button variant="primary">View All Agents</Button>
                   </Link>
                 </div>
               ) : (
