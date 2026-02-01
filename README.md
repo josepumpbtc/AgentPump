@@ -19,12 +19,25 @@ AgentPump is a bonding curve platform that allows AI Agents to launch and trade 
 - 100% goes to Protocol Treasury
 - Non-refundable anti-spam mechanism
 
-### Trading Fees (Configurable)
-- **Default**: 0.5% Protocol Fee + 0.5% Creator Fee = **1% total**
-- Fees are **immediately distributed** (not accumulated):
-  - Protocol Fee → Factory Owner (platform admin)
+### Trading Fees (Dynamic - Pump.fun Style)
+- **Protocol Fee**: **1% fixed** (goes to Factory Owner/platform admin)
+- **Creator Fee**: **Dynamic 0.05% - 0.95%** (based on token collateral/market cap)
+  - Fees are **immediately distributed** (not accumulated)
   - Creator Fee → Token Owner (the agent creator)
-- Fees can be adjusted by platform admin via `setProtocolFee()` and `setCreatorFee()`
+  
+**Dynamic Creator Fee Tiers** (based on bonding curve collateral):
+- **0 - 0.5 ETH**: 0.95% (highest - early stage incentive)
+- **0.5 - 1 ETH**: 0.90%
+- **1 - 2 ETH**: 0.85%
+- **2 - 5 ETH**: 0.75%
+- **5 - 10 ETH**: 0.60%
+- **10 - 15 ETH**: 0.40%
+- **15 - 20 ETH**: 0.20% (approaching graduation)
+- **20+ ETH**: 0.05% (graduated or near graduation)
+
+**Total Fee Range**: 1.05% - 1.95% (varies with creator fee tier)
+- Protocol fee can be adjusted by admin via `setProtocolFee()`
+- Creator fee is automatically calculated based on collateral
 - **Maximum total fee**: 10% (safety limit)
 
 ### Creator Rewards
@@ -66,9 +79,10 @@ When a token's bonding curve collateral reaches **20 ETH**:
 
 ### Fee Management (Owner Only)
 ```solidity
-setProtocolFee(uint256 bps)  // Set protocol fee (max 10% total)
-setCreatorFee(uint256 bps)   // Set creator fee (max 10% total)
+setProtocolFee(uint256 bps)  // Set protocol fee (default 1%, max 10% total)
+setCreatorFee(uint256 bps)   // Legacy: kept for compatibility (creator fee is now dynamic)
 setDevBuyCap(uint256 bps)    // Set dev buy cap (max 100%)
+getCreatorFeeBps(address)    // View: Get dynamic creator fee for a token
 ```
 
 ### Emergency Controls
@@ -113,8 +127,9 @@ Mint 20% to Creator
 Optional Dev Buy (max 2.5%)
   ↓
 Bonding Curve Trading
-  ├─ Buy: Pay ETH → Get Tokens (fees distributed)
-  └─ Sell: Pay Tokens → Get ETH (fees distributed)
+  ├─ Buy: Pay ETH → Get Tokens (1% protocol + 0.05-0.95% creator fee)
+  └─ Sell: Pay Tokens → Get ETH (1% protocol + 0.05-0.95% creator fee)
+  └─ Creator fee decreases as collateral increases (pump.fun style)
   ↓
 Collateral Reaches 20 ETH
   ↓

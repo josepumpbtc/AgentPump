@@ -1,6 +1,43 @@
-import { ConnectButton } from '@rainbow-me/rainbowkit';
+'use client'
+import { ConnectButton, useChainId } from '@rainbow-me/rainbowkit';
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
+
+interface TokenInfo {
+  address: string
+  name: string
+  symbol: string
+  creator: string
+  collateral: string
+  price: string
+  marketCap: string
+  progress: number
+  graduated: boolean
+}
 
 export default function Home() {
+  const chainId = useChainId();
+  const [tokens, setTokens] = useState<TokenInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchTokens = async () => {
+      try {
+        const res = await fetch(`/api/tokens?chainId=${chainId}`);
+        const data = await res.json();
+        setTokens(data.tokens || []);
+      } catch (err) {
+        console.error('Error fetching tokens:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchTokens();
+    // Refresh every 30 seconds
+    const interval = setInterval(fetchTokens, 30000);
+    return () => clearInterval(interval);
+  }, [chainId]);
   return (
     <main className="flex min-h-screen flex-col items-center bg-yellow-100 font-mono text-black">
       
@@ -44,48 +81,56 @@ export default function Home() {
           <span className="animate-ping h-3 w-3 rounded-full bg-red-500"></span>
         </div>
         
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-          {/* Card 1 */}
-          <div className="bg-white border-4 border-black p-4 shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] hover:scale-105 transition-transform cursor-pointer">
-            <div className="flex justify-between mb-2">
-              <span className="font-bold bg-blue-200 px-2 border border-black text-xs">AI AGENT</span>
-              <span className="font-bold text-green-600">+420%</span>
-            </div>
-            <h3 className="text-2xl font-black">Eva_Bot ()</h3>
-            <p className="text-sm my-2">Market Cap: 2.4K</p>
-            <div className="h-4 w-full bg-gray-200 border border-black rounded-full overflow-hidden">
-              <div className="h-full bg-green-500 w-[60%]"></div>
-            </div>
-            <p className="text-xs mt-1 font-bold">Bonding Curve: 60%</p>
+        {loading ? (
+          <div className="text-center p-8">
+            <p className="text-xl font-bold">Loading tokens...</p>
           </div>
-
-          {/* Card 2 */}
-          <div className="bg-white border-4 border-black p-4 shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] hover:scale-105 transition-transform cursor-pointer">
-             <div className="flex justify-between mb-2">
-              <span className="font-bold bg-purple-200 px-2 border border-black text-xs">TRADING BOT</span>
-              <span className="font-bold text-green-600">+69%</span>
-            </div>
-            <h3 className="text-2xl font-black">Gremlin ()</h3>
-            <p className="text-sm my-2">Market Cap: .9K</p>
-            <div className="h-4 w-full bg-gray-200 border border-black rounded-full overflow-hidden">
-              <div className="h-full bg-green-500 w-[20%]"></div>
-            </div>
-            <p className="text-xs mt-1 font-bold">Bonding Curve: 20%</p>
+        ) : tokens.length === 0 ? (
+          <div className="text-center p-8 bg-white border-4 border-black">
+            <p className="text-xl font-bold">No tokens launched yet!</p>
+            <p className="text-sm mt-2">Be the first to launch your agent token.</p>
           </div>
-
-           {/* Card 3 (New) */}
-           <div className="bg-yellow-200 border-4 border-black p-4 shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] hover:scale-105 transition-transform cursor-pointer">
-             <div className="flex justify-between mb-2">
-              <span className="font-bold bg-red-500 text-white px-2 border border-black text-xs animate-pulse">NEW</span>
-            </div>
-            <h3 className="text-2xl font-black">Manus ()</h3>
-            <p className="text-sm my-2">Market Cap: .2K</p>
-            <div className="h-4 w-full bg-gray-200 border border-black rounded-full overflow-hidden">
-              <div className="h-full bg-green-500 w-[5%]"></div>
-            </div>
-            <p className="text-xs mt-1 font-bold">Bonding Curve: 5%</p>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            {tokens.slice(0, 6).map((token) => (
+              <Link
+                key={token.address}
+                href={`/token/${token.address}`}
+                className="bg-white border-4 border-black p-4 shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] hover:scale-105 transition-transform cursor-pointer"
+              >
+                <div className="flex justify-between mb-2">
+                  <span className={`font-bold px-2 border border-black text-xs ${
+                    token.graduated ? 'bg-purple-200' : 'bg-blue-200'
+                  }`}>
+                    {token.graduated ? 'GRADUATED' : 'BONDING CURVE'}
+                  </span>
+                  {!token.graduated && (
+                    <span className="font-bold text-green-600">
+                      {parseFloat(token.collateral) > 0 ? '+' : ''}
+                      {((parseFloat(token.collateral) / 20) * 100).toFixed(0)}%
+                    </span>
+                  )}
+                </div>
+                <h3 className="text-2xl font-black">{token.name}</h3>
+                <p className="text-sm my-2">Market Cap: {parseFloat(token.marketCap).toFixed(4)} ETH</p>
+                {!token.graduated && (
+                  <>
+                    <div className="h-4 w-full bg-gray-200 border border-black rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-green-500 transition-all"
+                        style={{ width: `${token.progress}%` }}
+                      ></div>
+                    </div>
+                    <p className="text-xs mt-1 font-bold">Bonding Curve: {token.progress.toFixed(1)}%</p>
+                  </>
+                )}
+                {token.graduated && (
+                  <p className="text-xs mt-1 font-bold text-purple-600">Trading on Uniswap V2</p>
+                )}
+              </Link>
+            ))}
           </div>
-        </div>
+        )}
       </div>
     </main>
   )

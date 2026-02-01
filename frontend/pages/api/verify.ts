@@ -4,11 +4,14 @@ import { ethers } from 'ethers'
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') return res.status(405).end();
 
-  const { agentName, verificationCode, walletAddress, tokenName, tokenSymbol, nonce, chainId, deadline } = req.body;
+  const { agentName, verificationCode, walletAddress, tokenName, tokenSymbol, nonce, chainId, deadline, devBuyAmount } = req.body;
 
   if (!walletAddress || !agentName || !tokenName || !tokenSymbol || nonce === undefined || chainId === undefined || deadline === undefined) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
+
+  // Default devBuyAmount to 0 if not provided
+  const devBuyAmountValue = devBuyAmount !== undefined ? BigInt(devBuyAmount) : 0n;
 
   try {
     // 1. Fetch Agent's recent posts from Moltbook
@@ -64,14 +67,19 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const deadlineHex = ethers.toBeHex(deadline, 32);
     const deadlineBytes = ethers.getBytes(deadlineHex);
     
-    // Concatenate all bytes (abi.encodePacked style)
+    // devBuyAmount from request (default to 0)
+    const devBuyAmountHex = ethers.toBeHex(devBuyAmountValue, 32);
+    const devBuyAmountBytes = ethers.getBytes(devBuyAmountHex);
+    
+    // Concatenate all bytes (abi.encodePacked style) - matching contract: keccak256(abi.encodePacked(msg.sender, name, symbol, nonce, block.chainid, deadline, devBuyAmount))
     const packedData = ethers.concat([
       walletAddressBytes,
       nameBytes,
       symbolBytes,
       nonceBytes,
       chainIdBytes,
-      deadlineBytes
+      deadlineBytes,
+      devBuyAmountBytes
     ]);
     
     // Hash the packed data

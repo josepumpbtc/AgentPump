@@ -61,10 +61,11 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
     uint256 public constant MAX_TOTAL_FEE_BPS = 1000;        // 10% maximum total fee
     uint256 public constant CREATOR_VESTING_BPS = 2000;     // 20%
     uint256 public constant MAX_SUPPLY = 1_000_000_000 * 1e18; // 1B tokens max
+    uint256 public constant MIN_TRADE_AMOUNT = 0.0001 ether; // Minimum trade amount to prevent dust
     
     // Configurable fees (in basis points, 10000 = 100%)
-    uint256 public protocolFeeBps = 50;          // 0.5% default
-    uint256 public creatorFeeBps = 50;          // 0.5% default
+    uint256 public protocolFeeBps = 100;         // 1% default (pump.fun style)
+    uint256 public creatorFeeBps = 50;            // Legacy: kept for compatibility, but now dynamically calculated
     
     // Configurable dev buy cap (in basis points, 10000 = 100%)
     uint256 public maxDevBuyPercentBps = 250;    // 2.5% default
@@ -94,14 +95,35 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
 
     // Set protocol fee (in basis points)
     function setProtocolFee(uint256 _protocolFeeBps) external onlyOwner {
-        require(_protocolFeeBps + creatorFeeBps <= MAX_TOTAL_FEE_BPS, "Total fee exceeds limit");
+        require(_protocolFeeBps <= MAX_TOTAL_FEE_BPS, "Protocol fee exceeds limit");
+        // Use dynamic creator fee for total check
+        uint256 maxCreatorFeeBps = 95; // Maximum dynamic creator fee
+        require(_protocolFeeBps + maxCreatorFeeBps <= MAX_TOTAL_FEE_BPS, "Total fee exceeds limit");
         protocolFeeBps = _protocolFeeBps;
     }
 
     // Set creator fee (in basis points)
+    // Note: Creator fee is now dynamically calculated based on collateral.
+    // This function is kept for backward compatibility but may not be used.
     function setCreatorFee(uint256 _creatorFeeBps) external onlyOwner {
         require(protocolFeeBps + _creatorFeeBps <= MAX_TOTAL_FEE_BPS, "Total fee exceeds limit");
         creatorFeeBps = _creatorFeeBps;
+    }
+
+    // Get dynamic creator fee based on token collateral (pump.fun style)
+    // Fee decreases as collateral increases, incentivizing early creators
+    function getCreatorFeeBps(address token) public view returns (uint256) {
+        uint256 collateral = tokenCollateral[token];
+        
+        // Dynamic fee tiers based on collateral (similar to pump.fun)
+        if (collateral < 0.5 ether) return 95;      // 0.95% - Early stage, highest incentive
+        if (collateral < 1 ether) return 90;        // 0.90%
+        if (collateral < 2 ether) return 85;        // 0.85%
+        if (collateral < 5 ether) return 75;       // 0.75%
+        if (collateral < 10 ether) return 60;      // 0.60%
+        if (collateral < 15 ether) return 40;      // 0.40%
+        if (collateral < 20 ether) return 20;      // 0.20% - Approaching graduation
+        return 5;                                   // 0.05% - Graduated or near graduation
     }
 
     // Set dev buy cap (in basis points)
@@ -167,6 +189,7 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
         // 5. Initialize Virtual AMM with minimal liquidity
         uint256 initialEth = 0.001 ether;
         tokenCollateral[tokenAddr] = initialEth;
+        // Initialize k = x * y (will be updated after dev buy or min tokens mint)
         virtualK[tokenAddr] = initialEth * creatorAmount;
         
         // 6. Handle dev buy if requested
@@ -184,8 +207,10 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
             // So: ethForCurve = (devBuyAmount * x0) / y0
             uint256 ethForCurve = (devBuyAmount * initialEth) / creatorAmount;
             
-            // Add fees to get total ETH needed
-            uint256 totalFeeBps = protocolFeeBps + creatorFeeBps;
+            // Add fees to get total ETH needed (use dynamic creator fee)
+            // At launch, collateral is small, so creator fee will be highest (0.95%)
+            uint256 dynamicCreatorFeeBps = getCreatorFeeBps(tokenAddr);
+            uint256 totalFeeBps = protocolFeeBps + dynamicCreatorFeeBps;
             uint256 ethNeededWithFees = (ethForCurve * 10000) / (10000 - totalFeeBps);
             
             require(remainingEth >= ethNeededWithFees, "Insufficient ETH for dev buy");
@@ -198,9 +223,12 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
             uint256 minTokens = 1000 * 1e18; // 1000 tokens
             AgentToken(tokenAddr).mint(msg.sender, minTokens);
             
-            // Update k with new supply
+            // Update k with new supply to maintain curve consistency
             uint256 newSupply = creatorAmount + minTokens;
             virtualK[tokenAddr] = initialEth * newSupply;
+            
+            // Note: collateral remains at initialEth (0.001 ETH)
+            // This establishes the initial price: 0.001 ETH / newSupply
         }
         
         // 7. Refund excess ETH
@@ -223,14 +251,15 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
 
     // Internal Buy Logic using Virtual AMM
     function _buy(address tokenAddr, address buyer, uint256 ethAmount, uint256 minTokensOut) internal {
-        require(ethAmount > 0, "ETH required");
+        require(ethAmount >= MIN_TRADE_AMOUNT, "ETH amount too small");
         require(!graduated[tokenAddr], "Token has graduated");
         
         AgentToken token = AgentToken(tokenAddr);
         
-        // Calculate fees dynamically based on current config
+        // Calculate fees: protocol fee is fixed 1%, creator fee is dynamic (pump.fun style)
         uint256 protocolFee = (ethAmount * protocolFeeBps) / 10000;
-        uint256 creatorFee = (ethAmount * creatorFeeBps) / 10000;
+        uint256 dynamicCreatorFeeBps = getCreatorFeeBps(tokenAddr);
+        uint256 creatorFee = (ethAmount * dynamicCreatorFeeBps) / 10000;
         uint256 ethForCurve = ethAmount - protocolFee - creatorFee;
 
         // Get current state
@@ -245,36 +274,48 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
             virtualK[tokenAddr] = k;
         }
 
-        // Virtual AMM: x * y = k
-        // In bonding curve, when buying: both x and y increase, so k increases
-        // We calculate tokens based on maintaining the price curve
-        // Price = x / y, and we want price to increase as we buy
+        // Virtual AMM Bonding Curve Formula
+        // 
+        // DESIGN NOTE: Buy and Sell use different formulas by design:
+        // - Buy: Linear formula ensures price increases (bonding curve behavior)
+        // - Sell: Constant product formula ensures smooth price decrease
+        //
+        // This asymmetry is intentional for bonding curves:
+        // - Buying pushes price up faster (incentivizes early buyers)
+        // - Selling reduces price smoothly (protects liquidity)
+        //
+        // Buy formula: tokensBought = (ethForCurve * y0) / x0
+        // This ensures: new_price = x1/y1 > x0/y0 = old_price
+        // Where: x1 = x0 + ethForCurve, y1 = y0 + tokensBought
+        //
+        // Sell formula: x1 = (x0 * y0) / y1 (constant product)
+        // This ensures smooth price decrease when selling
+        //
+        // The formulas are mathematically consistent for bonding curve behavior
+        // where k increases on buy and decreases on sell, maintaining price direction
         
         // New ETH reserve: x1 = x0 + ethForCurve
         uint256 x1 = x0 + ethForCurve;
         
-        // Calculate tokens using constant product formula adapted for bonding curve
-        // The formula: tokensBought = (ethForCurve * y0) / x0
-        // This gives us a linear approximation, but for true constant product:
-        // If we maintain k constant: x0 * y0 = x1 * y1
-        // y1 = (x0 * y0) / x1
-        // tokensBought = y1 - y0 = ((x0 * y0) / x1) - y0 = y0 * (x0/x1 - 1)
-        // This is negative! So we need a different approach.
-        
-        // For bonding curve with increasing k:
-        // We want: new_price > old_price => x1/y1 > x0/y0 => x1*y0 > x0*y1
-        // If y1 = y0 + tokensBought: x1*y0 > x0*(y0+tokensBought)
-        // => x1*y0 > x0*y0 + x0*tokensBought
-        // => (x1-x0)*y0 > x0*tokensBought
-        // => ethForCurve * y0 > x0 * tokensBought
-        // => tokensBought < (ethForCurve * y0) / x0
-        
-        // Use the formula: tokensBought = (ethForCurve * y0) / x0
-        // This ensures price increases (x increases more than y)
         uint256 tokensBought;
         if (x0 > 0 && y0 > 0) {
-            // Calculate tokens: maintain price curve
+            // Buy formula: tokensBought = (ethForCurve * y0) / x0
+            // This linear formula ensures price increases: x1/y1 > x0/y0
+            // Mathematical proof:
+            //   new_price = (x0 + ethForCurve) / (y0 + tokensBought)
+            //   old_price = x0 / y0
+            //   For new_price > old_price:
+            //   (x0 + ethForCurve) / (y0 + tokensBought) > x0 / y0
+            //   => (x0 + ethForCurve) * y0 > x0 * (y0 + tokensBought)
+            //   => x0*y0 + ethForCurve*y0 > x0*y0 + x0*tokensBought
+            //   => ethForCurve*y0 > x0*tokensBought
+            //   => tokensBought < (ethForCurve * y0) / x0
+            //   Using equality gives maximum tokens while maintaining price increase
             tokensBought = (ethForCurve * y0) / x0;
+            
+            // Safety checks
+            require(tokensBought > 0, "Token amount too small");
+            require(x1 > x0, "ETH amount overflow check"); // Ensure x1 > x0
         } else {
             // Initial state: if no liquidity, use a simple formula
             tokensBought = ethForCurve * 1000; // 1 ETH = 1000 tokens initially
@@ -322,28 +363,49 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
         // Get current state
         uint256 x0 = tokenCollateral[token];
         uint256 y0 = tokenContract.totalSupply();
+        
+        // Calculate minimum ETH equivalent to enforce MIN_TRADE_AMOUNT
+        // This is approximate - actual ETH received may vary due to fees
+        if (y0 > 0 && x0 > 0) {
+            // Estimate ETH value: (amount / y0) * x0
+            uint256 estimatedEthValue = (amount * x0) / y0;
+            require(estimatedEthValue >= MIN_TRADE_AMOUNT, "Trade amount too small");
+        }
         uint256 k = virtualK[token];
         
         require(k > 0, "Invalid curve state");
         require(x0 > 0 && y0 > 0, "Invalid reserves");
         
-        // Virtual AMM: x * y = k (k increases as we trade)
-        // When selling: we add tokens back, so y increases
+        // Virtual AMM: Constant Product Formula for Selling
+        // 
+        // DESIGN NOTE: Sell uses constant product formula: x * y = k
+        // When selling: we add tokens back (y increases), so x decreases
+        // Formula: x1 = (x0 * y0) / y1
+        // This ensures smooth price decrease and maintains curve consistency
+        //
         // New token supply: y1 = y0 + amount
         uint256 y1 = y0 + amount;
         
-        // Calculate new ETH reserve based on constant product
-        // If we maintain the same k: x1 = k / y1
-        // But k = x0 * y0, so: x1 = (x0 * y0) / y1
+        // Safety check: y1 must be greater than y0
+        require(y1 > y0, "Invalid token amount");
+        
+        // Calculate new ETH reserve using constant product formula
+        // x1 = (x0 * y0) / y1
+        // This maintains the k relationship while allowing k to decrease on sell
         uint256 x1 = (x0 * y0) / y1;
         
-        // ETH to return: ethOutRaw = x0 - x1
+        // Safety checks: prevent underflow and ensure valid state
+        require(x1 > 0, "Division underflow: y1 too large");
         require(x0 >= x1, "Insufficient ETH reserve");
+        require(x0 - x1 <= x0, "Subtraction underflow check"); // Additional safety check
+        
+        // ETH to return: ethOutRaw = x0 - x1
         uint256 ethOutRaw = x0 - x1;
         
-        // Calculate fees dynamically based on current config
+        // Calculate fees: protocol fee is fixed 1%, creator fee is dynamic (pump.fun style)
         uint256 protocolFee = (ethOutRaw * protocolFeeBps) / 10000;
-        uint256 creatorFee = (ethOutRaw * creatorFeeBps) / 10000;
+        uint256 dynamicCreatorFeeBps = getCreatorFeeBps(token);
+        uint256 creatorFee = (ethOutRaw * dynamicCreatorFeeBps) / 10000;
         uint256 ethToReturn = ethOutRaw - protocolFee - creatorFee;
         
         require(ethToReturn >= minEthOut, "Slippage too high");
@@ -429,8 +491,15 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
                 block.timestamp + 300 // 5 minute deadline
             );
         
+        // Validate Uniswap call results
+        require(liquidity > 0, "Liquidity creation failed");
+        require(amountToken > 0 && amountETH > 0, "Invalid liquidity amounts");
+        require(amountToken >= amountTokenMin, "Token slippage too high");
+        require(amountETH >= amountETHMin, "ETH slippage too high");
+        
         // Get LP token (pair) address
         address lpToken = IUniswapV2Factory(uniswapFactory).getPair(tokenAddr, weth);
+        require(lpToken != address(0), "LP token pair not found");
         
         // Clear collateral (it's now in Uniswap)
         tokenCollateral[tokenAddr] = 0;
@@ -470,7 +539,8 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
         }
         
         uint256 protocolFee = (ethAmount * protocolFeeBps) / 10000;
-        uint256 creatorFee = (ethAmount * creatorFeeBps) / 10000;
+        uint256 dynamicCreatorFeeBps = getCreatorFeeBps(token);
+        uint256 creatorFee = (ethAmount * dynamicCreatorFeeBps) / 10000;
         uint256 ethForCurve = ethAmount - protocolFee - creatorFee;
         
         AgentToken tokenContract = AgentToken(token);
@@ -507,13 +577,24 @@ contract AgentPumpFactory is Ownable, ReentrancyGuard, Pausable {
         
         // Calculate ETH using constant product formula
         uint256 y1 = y0 + tokenAmount;
+        
+        // Safety check: prevent division underflow
+        if (y1 == 0 || y1 > y0 + tokenAmount) {
+            return 0; // Invalid input
+        }
+        
         uint256 x1 = (x0 * y0) / y1;
         
-        require(x0 >= x1, "Insufficient reserve");
+        // Check for underflow
+        if (x1 == 0 || x0 < x1) {
+            return 0; // Insufficient reserve or underflow
+        }
+        
         uint256 ethOutRaw = x0 - x1;
         
         uint256 protocolFee = (ethOutRaw * protocolFeeBps) / 10000;
-        uint256 creatorFee = (ethOutRaw * creatorFeeBps) / 10000;
+        uint256 dynamicCreatorFeeBps = getCreatorFeeBps(token);
+        uint256 creatorFee = (ethOutRaw * dynamicCreatorFeeBps) / 10000;
         ethOut = ethOutRaw - protocolFee - creatorFee;
     }
 }

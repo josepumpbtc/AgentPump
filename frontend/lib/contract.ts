@@ -85,7 +85,8 @@ export const FACTORY_ABI = [
       { internalType: 'string', name: 'symbol', type: 'string' },
       { internalType: 'bytes', name: 'signature', type: 'bytes' },
       { internalType: 'uint256', name: 'nonce', type: 'uint256' },
-      { internalType: 'uint256', name: 'deadline', type: 'uint256' }
+      { internalType: 'uint256', name: 'deadline', type: 'uint256' },
+      { internalType: 'uint256', name: 'devBuyAmount', type: 'uint256' }
     ],
     name: 'launchToken',
     outputs: [],
@@ -132,6 +133,24 @@ export const FACTORY_ABI = [
     ],
     name: 'tokenCollateral',
     outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }],
+    stateMutability: 'view',
+    type: 'function'
+  },
+  {
+    inputs: [
+      { internalType: 'address', name: 'token', type: 'address' }
+    ],
+    name: 'getCreatorFeeBps',
+    outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }],
+    stateMutability: 'view',
+    type: 'function'
+  },
+  {
+    inputs: [
+      { internalType: 'address', name: '', type: 'address' }
+    ],
+    name: 'graduated',
+    outputs: [{ internalType: 'bool', name: '', type: 'bool' }],
     stateMutability: 'view',
     type: 'function'
   },
